@@ -77,6 +77,18 @@ function colorIndexOf(id) {
   return h % COVER_GRADIENTS.length;
 }
 
+// 自定义标签色池（按标签文字稳定配色，不同标签可区分）
+const TAG_COLORS = [
+  '#2E7D32', '#E08A00', '#D9433F', '#6D4FC2', '#0E7C86',
+  '#C23A6B', '#5E7C1F', '#A05A0C', '#3A47B8', '#9D174D',
+];
+
+function tagColorOf(tag) {
+  let h = 0;
+  for (let i = 0; i < tag.length; i++) h = (h * 31 + tag.charCodeAt(i)) >>> 0;
+  return TAG_COLORS[h % TAG_COLORS.length];
+}
+
 // 尽力抓取页面标题：直连 → CORS 代理，均失败返回 null（交由手填）
 async function fetchTitle(url) {
   const attempts = [
@@ -178,6 +190,7 @@ export default function App() {
   const [addOpen, setAddOpen] = useState(false);
   const [addUrl, setAddUrl] = useState('');
   const [addName, setAddName] = useState('');
+  const [addTag, setAddTag] = useState('');
   const [addPhase, setAddPhase] = useState('idle'); // idle | fetching | need-name
 
   // 编辑卡片面板状态
@@ -211,13 +224,14 @@ export default function App() {
     load();
   }, [load]);
 
-  const commitAdd = useCallback((name, url) => {
-    const card = { id: `c${Date.now()}`, name, url, addedAt: Date.now() };
+  const commitAdd = useCallback((name, url, tag) => {
+    const card = { id: `c${Date.now()}`, name, url, addedAt: Date.now(), tag: tag || '' };
     setCards((cur) => [...cur, card]);
     setDirty(true);
     setAddOpen(false);
     setAddUrl('');
     setAddName('');
+    setAddTag('');
     setAddPhase('idle');
     setMsg(`已添加「${name}」（记得点保存）`);
   }, []);
@@ -230,7 +244,7 @@ export default function App() {
     }
     const name = addName.trim();
     if (name) {
-      commitAdd(name, url);
+      commitAdd(name, url, addTag.trim());
       return;
     }
     if (addPhase === 'need-name') {
@@ -245,12 +259,12 @@ export default function App() {
     setAddPhase('fetching');
     const title = await fetchTitle(url);
     if (title) {
-      commitAdd(title, url);
+      commitAdd(title, url, addTag.trim());
     } else {
       setAddPhase('need-name');
       setMsg('无法自动获取标题，请手动填写文档名称');
     }
-  }, [addUrl, addName, addPhase, commitAdd]);
+  }, [addUrl, addName, addTag, addPhase, commitAdd]);
 
   const removeCard = useCallback((id) => {
     setCards((cur) => cur.filter((c) => c.id !== id));
@@ -259,7 +273,7 @@ export default function App() {
   }, []);
 
   const openEdit = useCallback((card) => {
-    setEditing({ id: card.id, name: card.name, url: card.url });
+    setEditing({ id: card.id, name: card.name, url: card.url, tag: card.tag || '' });
   }, []);
 
   const commitEdit = useCallback(() => {
@@ -274,7 +288,8 @@ export default function App() {
       setMsg('请填写文档名称');
       return;
     }
-    setCards((cur) => cur.map((c) => (c.id === editing.id ? { ...c, name, url } : c)));
+    const tag = editing.tag ? editing.tag.trim() : '';
+    setCards((cur) => cur.map((c) => (c.id === editing.id ? { ...c, name, url, tag } : c)));
     setDirty(true);
     setEditing(null);
     setMsg('已修改卡片（记得点保存）');
@@ -437,6 +452,11 @@ export default function App() {
                     className="card-cover"
                     style={{ background: `linear-gradient(135deg, ${g0}, ${g1})` }}
                   >
+                    {card.tag ? (
+                      <span className="card-tag" style={{ background: tagColorOf(card.tag) }} title={card.tag}>
+                        {card.tag}
+                      </span>
+                    ) : null}
                     <DocIcon />
                     <span className="card-type">{sourceTypeOf(card.url)}</span>
                     <span className="card-open" aria-hidden="true">↗</span>
@@ -510,6 +530,12 @@ export default function App() {
                 />
               </>
             )}
+            <label>标签（可选，如 组件 / 产测 / 整机）</label>
+            <input
+              value={addTag}
+              onChange={(e) => setAddTag(e.target.value)}
+              placeholder="如：组件、产测、整机…"
+            />
             <div className="add-hint">
               {addPhase === 'fetching'
                 ? '正在抓取页面标题…'
@@ -542,6 +568,12 @@ export default function App() {
               onChange={(e) => setEditing({ ...editing, url: e.target.value })}
               placeholder="https://…"
               onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(); }}
+            />
+            <label>标签（可选）</label>
+            <input
+              value={editing.tag || ''}
+              onChange={(e) => setEditing({ ...editing, tag: e.target.value })}
+              placeholder="如：组件、产测、整机…"
             />
             <div className="add-btns">
               <button className="btn" onClick={() => setEditing(null)}>取消</button>

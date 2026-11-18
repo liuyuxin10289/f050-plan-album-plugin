@@ -32,6 +32,7 @@ body {
 .card-link { display: block; text-decoration: none; color: inherit; }
 .card-cover { position: relative; height: 110px; display: flex; align-items: center; justify-content: center; }
 .card-icon { filter: drop-shadow(0 1px 2px rgba(0,0,0,.15)); }
+.card-tag { position: absolute; top: 8px; left: 10px; font-size: 11px; font-weight: 500; color: #fff; padding: 2px 8px; border-radius: 4px; max-width: 60%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
 .card-type { position: absolute; bottom: 8px; left: 10px; font-size: 11px; color: rgba(255,255,255,.95); background: rgba(0,0,0,.18); padding: 2px 8px; border-radius: 10px; max-width: 70%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-open { position: absolute; bottom: 8px; right: 10px; font-size: 14px; color: rgba(255,255,255,.95); opacity: 0; transform: translate(2px,-2px); transition: opacity .15s, transform .15s; }
 .card:hover .card-open { opacity: 1; transform: translate(0,0); }
@@ -76,6 +77,8 @@ body {
       <label>文档名称（用于卡片显示）</label>
       <input id="name" placeholder="请输入文档名称" onkeydown="if(event.key==='Enter')doAdd()" />
     </div>
+    <label>标签（可选）</label>
+    <input id="tag" placeholder="如：组件、产测、整机…" />
     <div class="add-hint" id="hint">填链接后点「添加」：网页链接自动抓标题；飞书文档需手动填名称</div>
     <div class="add-btns">
       <button class="btn" onclick="closePanel()">取消</button>
@@ -91,6 +94,8 @@ body {
     <input id="editName" placeholder="请输入文档名称" />
     <label>产测方案链接</label>
     <input id="editUrl" placeholder="https://…" onkeydown="if(event.key==='Enter')commitEdit()" />
+    <label>标签（可选）</label>
+    <input id="editTag" placeholder="如：组件、产测、整机…" />
     <div class="add-btns">
       <button class="btn" onclick="closePanel()">取消</button>
       <button class="btn btn-primary" onclick="commitEdit()">确定</button>
@@ -106,9 +111,9 @@ const PROXIES = [
 ];
 const DOC_ICON = '<svg class="card-icon" viewBox="0 0 24 24" width="34" height="34"><path d="M7 2.5h7.2l4.3 4.3V21.5H7V2.5z" fill="rgba(255,255,255,0.30)"/><path d="M14 2.5v4.5h4.5" fill="rgba(255,255,255,0.45)"/><rect x="9.2" y="11" width="5.6" height="1.5" rx="0.75" fill="#fff"/><rect x="9.2" y="14" width="5.6" height="1.5" rx="0.75" fill="#fff"/><rect x="9.2" y="17" width="3.4" height="1.5" rx="0.75" fill="#fff"/></svg>';
 let cards = [
-  { id:'c1', name:'F050 整机自检产测方案', url:'https://gcmomk3i2c.feishu.cn/docx/AbCdEf123456', addedAt: Date.now()-3600000 },
-  { id:'c2', name:'F050 XY 轴定位精度测试方案', url:'https://example.com/xy', addedAt: Date.now()-86400000 },
-  { id:'c3', name:'F050 四色换色功能测试方案', url:'https://gcmomk3i2c.feishu.cn/wiki/space/123', addedAt: Date.now()-172800000 },
+  { id:'c1', name:'F050 整机自检产测方案', url:'https://gcmomk3i2c.feishu.cn/docx/AbCdEf123456', addedAt: Date.now()-3600000, tag:'整机' },
+  { id:'c2', name:'F050 XY 轴定位精度测试方案', url:'https://example.com/xy', addedAt: Date.now()-86400000, tag:'组件' },
+  { id:'c3', name:'F050 四色换色功能测试方案', url:'https://gcmomk3i2c.feishu.cn/wiki/space/123', addedAt: Date.now()-172800000, tag:'产测' },
 ];
 let dirty = false;
 let editId = null;
@@ -134,6 +139,8 @@ const fmtTime = ts => {
   return d.getFullYear()+'-'+mmdd;
 };
 const colorIndex = id => { let h = 0; for (let i = 0; i < id.length; i++) h = (h*31 + id.charCodeAt(i)) >>> 0; return h % GRADS.length; };
+const TAG_COLORS = ['#2E7D32','#E08A00','#D9433F','#6D4FC2','#0E7C86','#C23A6B','#5E7C1F','#A05A0C','#3A47B8','#9D174D'];
+const tagColor = t => { let h = 0; for (let i = 0; i < t.length; i++) h = (h*31 + t.charCodeAt(i)) >>> 0; return TAG_COLORS[h % TAG_COLORS.length]; };
 let dragIdx = null, overIdx = null;
 function pDragStart(e, idx){ dragIdx = idx; e.dataTransfer.effectAllowed='move'; try{e.dataTransfer.setData('text/plain',String(idx));}catch(_){} e.currentTarget.classList.add('dragging'); }
 function pDragOver(e, idx){ e.preventDefault(); e.dataTransfer.dropEffect='move'; overIdx=idx; document.querySelectorAll('.card').forEach((c,k)=>c.classList.toggle('drag-over', k===idx && dragIdx!==idx)); }
@@ -152,7 +159,9 @@ function render(){
     const [g0,g1] = GRADS[colorIndex(c.id)];
     return '<div class="card" draggable="true" ondragstart="pDragStart(event,'+i+')" ondragover="pDragOver(event,'+i+')" ondrop="pDrop(event)" ondragend="pDragEnd()">'
       + '<a class="card-link" href="'+c.url+'" target="_blank" rel="noopener noreferrer" title="打开：'+escapeHtml(c.name)+'">'
-      + '<div class="card-cover" style="background:linear-gradient(135deg,'+g0+','+g1+')">'+DOC_ICON
+      + '<div class="card-cover" style="background:linear-gradient(135deg,'+g0+','+g1+')">'
+      + (c.tag ? '<span class="card-tag" style="background:'+tagColor(c.tag)+'">'+escapeHtml(c.tag)+'</span>' : '')
+      + DOC_ICON
       + '<span class="card-type">'+sourceType(c.url)+'</span><span class="card-open">↗</span></div>'
       + '<div class="card-body"><div class="card-title">'+escapeHtml(c.name)+'</div><div class="card-meta">添加于 '+fmtTime(c.addedAt)+'</div></div></a>'
       + '<div class="card-actions">'
@@ -162,20 +171,20 @@ function render(){
   }).join('');
 }
 function escapeHtml(s){ return s.replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
-function openAdd(){ document.getElementById('mask').style.display='flex'; document.getElementById('url').value=''; document.getElementById('nameWrap').style.display='none'; document.getElementById('name').value=''; document.getElementById('hint').textContent='填链接后点「添加」：网页链接自动抓标题；飞书文档需手动填名称'; document.getElementById('addBtn').disabled=false; document.getElementById('addBtn').textContent='添加'; setTimeout(()=>document.getElementById('url').focus(),50); }
+function openAdd(){ document.getElementById('mask').style.display='flex'; document.getElementById('url').value=''; document.getElementById('nameWrap').style.display='none'; document.getElementById('name').value=''; document.getElementById('tag').value=''; document.getElementById('hint').textContent='填链接后点「添加」：网页链接自动抓标题；飞书文档需手动填名称'; document.getElementById('addBtn').disabled=false; document.getElementById('addBtn').textContent='添加'; setTimeout(()=>document.getElementById('url').focus(),50); }
 function closePanel(){ document.getElementById('mask').style.display='none'; document.getElementById('editMask').style.display='none'; }
 function del(id){ cards = cards.filter(c=>c.id!==id); render(); setDirty('已删除卡片'); }
 function openEdit(id){
   const c = cards.find(x=>x.id===id); if(!c) return;
-  editId = id; document.getElementById('editName').value=c.name; document.getElementById('editUrl').value=c.url;
+  editId = id; document.getElementById('editName').value=c.name; document.getElementById('editUrl').value=c.url; document.getElementById('editTag').value=c.tag||'';
   document.getElementById('editMask').style.display='flex';
   setTimeout(()=>document.getElementById('editName').focus(),50);
 }
 function commitEdit(){
-  const name=document.getElementById('editName').value.trim(); const url=document.getElementById('editUrl').value.trim();
+  const name=document.getElementById('editName').value.trim(); const url=document.getElementById('editUrl').value.trim(); const tag=document.getElementById('editTag').value.trim();
   if(!name){ msg('请填写文档名称'); return; }
   if(!/^https?:\/\//i.test(url)){ msg('链接无效'); return; }
-  cards = cards.map(c=>c.id===editId?{...c,name,url}:c);
+  cards = cards.map(c=>c.id===editId?{...c,name,url,tag}:c);
   closePanel(); render(); setDirty('已修改卡片');
 }
 function save(){ dirty=false; renderSaveBtn(); msg('已保存到飞书表'); }
@@ -197,13 +206,14 @@ async function fetchTitle(url){
 async function doAdd(){
   const url = document.getElementById('url').value.trim();
   if(!/^https?:\/\//i.test(url)){ msg('请输入有效的 http(s) 链接'); return; }
+  const tag = document.getElementById('tag').value.trim();
   const name = document.getElementById('name').value.trim();
-  if(name){ commit(name, url); return; }
+  if(name){ commit(name, url, tag); return; }
   if(isFeishu(url)){ showName('飞书文档链接需登录鉴权，无法自动读取标题，请手动填写文档名称'); return; }
   document.getElementById('addBtn').disabled = true; document.getElementById('addBtn').textContent='抓取中…';
   document.getElementById('hint').textContent='正在抓取页面标题…';
   const title = await fetchTitle(url);
-  if(title){ commit(title, url); }
+  if(title){ commit(title, url, tag); }
   else { showName('无法自动获取标题，请手动填写文档名称'); }
 }
 function showName(hintText){
@@ -212,8 +222,8 @@ function showName(hintText){
   document.getElementById('addBtn').disabled=false; document.getElementById('addBtn').textContent='确认添加';
   document.getElementById('name').focus();
 }
-function commit(name, url){
-  cards.push({ id:'c'+Date.now(), name, url, addedAt: Date.now() });
+function commit(name, url, tag){
+  cards.push({ id:'c'+Date.now(), name, url, tag: tag||'', addedAt: Date.now() });
   render(); closePanel(); setDirty('已添加「'+name+'」');
 }
 render(); renderSaveBtn();
