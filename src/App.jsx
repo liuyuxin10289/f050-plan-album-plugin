@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { bitable, dashboard, DashboardState, SourceType } from '@lark-base-open/js-sdk';
 
-// 存储表：产测方案画册草稿（飞书表存卡片列表 JSON）
-const STORAGE_TABLE_ID = 'tblIb45TQJMKFzbs';
+// 存储表：运行时按名称自动查找，不存在则自动创建（不硬编码表 ID，适配任意 Base）
+const STORAGE_TABLE_NAME = '产测方案画册草稿';
 const STORAGE_FIELD = '画册数据';
+const TEXT_FIELD_TYPE = 1; // FieldType.Text
 
-// 封面渐变色池（画册卡片封面，蓝白主调 + 少量辅助色，按顺序循环分配）
+// 封面渐变色池（画册卡片封面，蓝白主调 + 少量辅助色）
 const COVER_GRADIENTS = [
   ['#185FA5', '#4A9BD9'],
   ['#0C447C', '#2E7CB8'],
@@ -99,9 +100,27 @@ async function fetchTitle(url) {
   return null;
 }
 
-// 读取飞书表中存储的卡片列表
+// 获取存储表：按名称查找，不存在则自动创建（含文本字段）
+async function ensureStorageTable() {
+  let table = null;
+  try {
+    table = await bitable.base.getTableByName(STORAGE_TABLE_NAME);
+  } catch (e) {
+    table = null;
+  }
+  if (!table) {
+    const res = await bitable.base.addTable({
+      name: STORAGE_TABLE_NAME,
+      fields: [{ name: STORAGE_FIELD, type: TEXT_FIELD_TYPE }],
+    });
+    table = await bitable.base.getTableById(res.tableId);
+  }
+  return table;
+}
+
+// 读取卡片列表
 async function readCards() {
-  const table = await bitable.base.getTableById(STORAGE_TABLE_ID);
+  const table = await ensureStorageTable();
   const field = await table.getFieldByName(STORAGE_FIELD);
   const ids = await table.getRecordIdList();
   if (!ids || !ids.length) return [];
@@ -119,7 +138,7 @@ async function readCards() {
 
 // 将卡片列表写入飞书表
 async function writeCards(cards) {
-  const table = await bitable.base.getTableById(STORAGE_TABLE_ID);
+  const table = await ensureStorageTable();
   const field = await table.getFieldByName(STORAGE_FIELD);
   const json = JSON.stringify(cards);
   const seg = [{ type: 'text', text: json }];
@@ -150,35 +169,39 @@ export default function App() {
   const [error, setError] = useState(null);
   const [cards, setCards] = useState([]);
   const [msg, setMsg] = useState('');
+  const [dirty, setDirty] = useState(false); // 是否有未保存的更改
 
   // 拖拽排序状态
-  const [dragId, setDragId] = useState(null); // 正在拖拽的卡片 id（用于视觉高亮）
+  const [dragId, setDragId] = useState(null);
 
   // 添加卡片面板状态
   const [addOpen, setAddOpen] = useState(false);
   const [addUrl, setAddUrl] = useState('');
   const [addName, setAddName] = useState('');
-  const [addPhase, setAddPhase] = useState('idle'); // idle | fetching | need-name | saving
+  const [addPhase, setAddPhase] = useState('idle'); // idle | fetching | need-name
+
+  // 编辑卡片面板状态
+  const [editing, setEditing] = useState(null); // { id, name, url }
 
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
-  const dragIndexRef = useRef(null); // 拖拽中的卡片当前 index（实时重排用）
-  const justDraggedRef = useRef(false); // 拖拽结束标记，抑制随后的 click 误触
+  const dragIndexRef = useRef(null);
+  const justDraggedRef = useRef(false);
 
   const load = useCallback(async () => {
     try {
       const list = await readCards();
       setCards(list);
+      setDirty(false);
       setLoading(false);
       setError(null);
-      setMsg(list.length ? `已加载 ${list.length} 个产测方案 · 拖动卡片可调整顺序` : '暂无卡片，点击「添加卡片」填入产测方案链接');
+      setMsg(list.length ? `已加载 ${list.length} 个产测方案 · 拖动卡片可排序` : '暂无卡片，点击「添加卡片」填入产测方案链接');
     } catch (e) {
       setLoading(false);
       setError(String((e && e.message) || e));
     }
   }, []);
 
-  // 感知仪表盘插件状态（Create/Config/View/FullScreen）
   useEffect(() => {
     try {
       setDashState(dashboard.state);
@@ -188,20 +211,15 @@ export default function App() {
     load();
   }, [load]);
 
-  const commitAdd = useCallback(async (name, url) => {
+  const commitAdd = useCallback((name, url) => {
     const card = { id: `c${Date.now()}`, name, url, addedAt: Date.now() };
-    const next = [...cardsRef.current, card];
-    setCards(next);
-    try {
-      await writeCards(next);
-      setMsg(`已添加「${name}」并保存到飞书表`);
-    } catch (e) {
-      setMsg('添加成功但保存失败：' + String((e && e.message) || e));
-    }
+    setCards((cur) => [...cur, card]);
+    setDirty(true);
     setAddOpen(false);
     setAddUrl('');
     setAddName('');
     setAddPhase('idle');
+    setMsg(`已添加「${name}」（记得点保存）`);
   }, []);
 
   const handleAdd = useCallback(async () => {
@@ -212,42 +230,74 @@ export default function App() {
     }
     const name = addName.trim();
     if (name) {
-      await commitAdd(name, url);
+      commitAdd(name, url);
       return;
     }
-    // 已进入「手动填写名称」阶段但未填 → 提示
     if (addPhase === 'need-name') {
       setMsg('请先填写文档名称');
       return;
     }
-    // 飞书链接需登录鉴权，无法跨域抓标题 → 直接让用户手填名称
     if (isFeishuLink(url)) {
       setAddPhase('need-name');
       setMsg('飞书文档链接需登录鉴权，无法自动读取标题，请手动填写文档名称');
       return;
     }
-    // 普通网页链接 → 尝试自动抓标题
     setAddPhase('fetching');
     const title = await fetchTitle(url);
     if (title) {
-      await commitAdd(title, url);
+      commitAdd(title, url);
     } else {
       setAddPhase('need-name');
       setMsg('无法自动获取标题，请手动填写文档名称');
     }
   }, [addUrl, addName, addPhase, commitAdd]);
 
-  const removeCard = useCallback(async (id) => {
-    const target = cardsRef.current.find((c) => c.id === id);
-    const next = cardsRef.current.filter((c) => c.id !== id);
-    setCards(next);
+  const removeCard = useCallback((id) => {
+    setCards((cur) => cur.filter((c) => c.id !== id));
+    setDirty(true);
+    setMsg('已删除卡片（记得点保存）');
+  }, []);
+
+  const openEdit = useCallback((card) => {
+    setEditing({ id: card.id, name: card.name, url: card.url });
+  }, []);
+
+  const commitEdit = useCallback(() => {
+    if (!editing) return;
+    const url = editing.url.trim();
+    if (!/^https?:\/\//i.test(url)) {
+      setMsg('链接无效');
+      return;
+    }
+    const name = editing.name.trim();
+    if (!name) {
+      setMsg('请填写文档名称');
+      return;
+    }
+    setCards((cur) => cur.map((c) => (c.id === editing.id ? { ...c, name, url } : c)));
+    setDirty(true);
+    setEditing(null);
+    setMsg('已修改卡片（记得点保存）');
+  }, [editing]);
+
+  const save = useCallback(async () => {
     try {
-      await writeCards(next);
-      setMsg(`已删除「${target ? target.name : ''}」并保存`);
+      await writeCards(cardsRef.current);
+      setDirty(false);
+      setMsg('已保存到飞书表');
     } catch (e) {
-      setMsg('删除成功但保存失败：' + String((e && e.message) || e));
+      setMsg('保存失败：' + String((e && e.message) || e));
     }
   }, []);
+
+  const reload = useCallback(async () => {
+    if (dirty) {
+      const ok = window.confirm('有未保存的更改，刷新将丢弃这些更改，确定继续？');
+      if (!ok) return;
+    }
+    await load();
+    setMsg('已重新加载');
+  }, [dirty, load]);
 
   const openAdd = useCallback(() => {
     setAddUrl('');
@@ -257,7 +307,7 @@ export default function App() {
     setMsg('');
   }, []);
 
-  // —— 拖拽排序 ——
+  // —— 拖拽排序（本地重排，保存时才写表）——
   const onDragStart = useCallback((e, idx, id) => {
     dragIndexRef.current = idx;
     setDragId(id);
@@ -265,7 +315,7 @@ export default function App() {
     try {
       e.dataTransfer.setData('text/plain', String(idx));
     } catch (err) {
-      /* 某些环境限制 setData，忽略 */
+      /* ignore */
     }
   }, []);
 
@@ -289,16 +339,11 @@ export default function App() {
     setCards(next);
   }, []);
 
-  const onDrop = useCallback(async (e) => {
-    e.preventDefault();
+  const onDrop = useCallback(() => {
     dragIndexRef.current = null;
     setDragId(null);
-    try {
-      await writeCards(cardsRef.current);
-      setMsg('已调整顺序并保存');
-    } catch (err) {
-      setMsg('顺序已调整但保存失败：' + String((err && err.message) || err));
-    }
+    setDirty(true);
+    setMsg('已调整顺序（记得点保存）');
   }, []);
 
   const onDragEnd = useCallback(() => {
@@ -310,12 +355,12 @@ export default function App() {
     }, 120);
   }, []);
 
-  // 配置态：保存配置（数据源固定为存储表）
   const handleConfirm = useCallback(async () => {
     try {
+      const table = await ensureStorageTable();
       await dashboard.saveConfig({
         dataConditions: {
-          tableId: STORAGE_TABLE_ID,
+          tableId: table.id,
           dataRange: { type: SourceType.ALL },
           series: 'COUNTA',
           groups: [],
@@ -336,7 +381,7 @@ export default function App() {
       <div className="app">
         <div className="config-panel">
           <div className="config-title">F050 产测方案画册</div>
-          <div className="config-desc">卡片手动增删，每张卡片绑定一个产测方案链接并显示文档名称，点击跳转查阅。点击右下角「确定」添加到仪表盘。</div>
+          <div className="config-desc">卡片手动增删改，每张卡片绑定一个产测方案链接并显示文档名称，点击跳转查阅。点击右下角「确定」添加到仪表盘。</div>
         </div>
         <button className="config-confirm" onClick={handleConfirm}>确定</button>
       </div>
@@ -348,11 +393,14 @@ export default function App() {
       <div className="header">
         <span className="h-title">F050 产测方案画册</span>
         <div className="h-actions">
-          <button className="btn" onClick={load}>刷新</button>
+          <button className="btn" onClick={reload}>刷新</button>
           <button className="btn btn-primary" onClick={openAdd}>＋ 添加卡片</button>
+          <button className={`btn${dirty ? ' btn-save-dirty' : ''}`} onClick={save}>
+            {dirty ? '● 保存' : '保存'}
+          </button>
         </div>
       </div>
-      <div className="t-msg">{msg}</div>
+      <div className="t-msg">{dirty ? '有未保存的更改，点击「保存」写入飞书表 · ' : ''}{msg}</div>
 
       <div className="album">
         {cards.length === 0 ? (
@@ -398,22 +446,40 @@ export default function App() {
                     <div className="card-meta">添加于 {fmtTime(card.addedAt)}</div>
                   </div>
                 </a>
-                <button
-                  className="card-del"
-                  title="删除卡片"
-                  draggable={false}
-                  onDragStart={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    removeCard(card.id);
-                  }}
-                >
-                  ×
-                </button>
+                <div className="card-actions">
+                  <button
+                    className="card-btn"
+                    title="编辑卡片"
+                    draggable={false}
+                    onDragStart={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openEdit(card);
+                    }}
+                  >
+                    ✎
+                  </button>
+                  <button
+                    className="card-btn card-btn-del"
+                    title="删除卡片"
+                    draggable={false}
+                    onDragStart={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      removeCard(card.id);
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
             );
           })
@@ -454,6 +520,32 @@ export default function App() {
               <button className="btn btn-primary" onClick={handleAdd} disabled={addPhase === 'fetching'}>
                 {addPhase === 'fetching' ? '抓取中…' : addPhase === 'need-name' ? '确认添加' : '添加'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editing && (
+        <div className="add-mask" onClick={() => setEditing(null)}>
+          <div className="add-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="add-title">编辑产测方案卡片</div>
+            <label>文档名称</label>
+            <input
+              value={editing.name}
+              onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+              placeholder="请输入文档名称"
+              autoFocus
+            />
+            <label>产测方案链接</label>
+            <input
+              value={editing.url}
+              onChange={(e) => setEditing({ ...editing, url: e.target.value })}
+              placeholder="https://…"
+              onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(); }}
+            />
+            <div className="add-btns">
+              <button className="btn" onClick={() => setEditing(null)}>取消</button>
+              <button className="btn btn-primary" onClick={commitEdit}>确定</button>
             </div>
           </div>
         </div>
